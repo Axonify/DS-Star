@@ -8,9 +8,9 @@ from pathlib import Path
 import sys
 import atexit
 import yaml
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime
-import google.generativeai as genai
+from provider import ModelProvider, GeminiProvider
 
 # =============================================================================
 # CONFIGURATION & PROMPT TEMPLATES
@@ -33,12 +33,15 @@ class DSConfig:
     runs_dir: str = "runs"
     data_dir: str = "data"
     code_library_dir: str = "code_library"
+    agent_models: Dict[str, str] = field(default_factory=dict)
     
     def __post_init__(self):
         if self.run_id is None:
             self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{uuid.uuid4().hex[:6]}"
         if self.api_key is None:
             self.api_key = os.environ.get("GEMINI_API_KEY")
+        if self.agent_models is None:
+            self.agent_models = {}
 
 
 
@@ -234,11 +237,29 @@ class DS_STAR_Agent:
         self.config = config
         self.storage = ArtifactStorage(config)
         self.controller = PipelineController(config, self.storage, self)
-        if config.api_key:
-            genai.configure(api_key=config.api_key)
-        else:
-            raise ValueError("GEMINI_API_KEY must be set in environment or config.")
-        self.model = genai.GenerativeModel(config.model_name)
+        # Initialize providers for each agent type
+        self.providers = {}
+        default_model = config.model_name
+        
+        # List of known agents
+        agents = ["ANALYZER", "PLANNER", "CODER", "VERIFIER", "ROUTER", "DEBUGGER", "FINALYZER"]
+        
+        # We need to know which provider class corresponds to which model or config
+        # For now, we assume GeminiProvider is the default.
+        # In a more advanced setup, we might map model names to providers or have a factory.
+        
+        # Check for API key using the provider's requirement
+        # Since we are defaulting to Gemini for now:
+        gemini_env_var = GeminiProvider(api_key="", model_name="").env_var_name
+        if not config.api_key and not os.environ.get(gemini_env_var):
+             raise ValueError(f"{gemini_env_var} must be set in environment or config.")
+        
+        api_key = config.api_key or os.environ.get(gemini_env_var)
+
+        for agent in agents:
+            model_name = config.agent_models.get(agent, default_model)
+            self.providers[agent] = GeminiProvider(api_key, model_name)
+            self.controller.logger.info(f"Initialized {agent} with model: {model_name}")
         
         # Setup execution environment
         self.exec_dir = Path(config.runs_dir) / config.run_id / "exec_env"
@@ -273,15 +294,27 @@ class DS_STAR_Agent:
         
         atexit.register(lambda: self.log_file.close())
     
-    def _call_gemini(self, agent_name: str, prompt: str) -> str:
-        """Call Gemini API with logging."""
+    def _call_model(self, agent_name: str, prompt: str) -> str:
+        """Call the appropriate model provider for the agent."""
         try:
-            response = self.model.generate_content(prompt)
-            response_text = response.text
+            provider = self.providers.get(agent_name)
+            if not provider:
+                # Fallback to default if agent name not found (shouldn't happen with current logic)
+                # or if we want to support dynamic agent names
+                default_model = self.config.model_name
+                # We need the API key here. We can try to get it from config or env.
+                # Since we are in fallback, we assume Gemini.
+                gemini_env_var = GeminiProvider(api_key="", model_name="").env_var_name
+                api_key = self.config.api_key or os.environ.get(gemini_env_var)
+                if not api_key:
+                     raise ValueError(f"API Key not found for fallback provider.")
+                provider = GeminiProvider(api_key, default_model)
+                
+            response_text = provider.generate_content(prompt)
             self.controller.logger.info(f"[{agent_name}] Response received ({len(response_text)} chars)")
             return response_text
         except Exception as e:
-            error_msg = f"Error calling Gemini API: {str(e)}"
+            error_msg = f"Error calling model for {agent_name}: {str(e)}"
             self.controller.logger.error(error_msg)
             raise
     
@@ -341,7 +374,7 @@ class DS_STAR_Agent:
         
         result = self.controller.execute_step(
             "analyzer",
-            step_func=lambda prompt=prompt, **kwargs: self._call_gemini("ANALYZER", prompt),  # FIXED
+            step_func=lambda prompt=prompt, **kwargs: self._call_model("ANALYZER", prompt),  # FIXED
             prompt=prompt,
             filename=filename
         )
@@ -370,7 +403,7 @@ class DS_STAR_Agent:
         
         return self.controller.execute_step(
             step_type,
-            step_func=lambda prompt=prompt, **kwargs: self._call_gemini("PLANNER", prompt),  # FIXED
+            step_func=lambda prompt=prompt, **kwargs: self._call_model("PLANNER", prompt),  # FIXED
             prompt=prompt,
             query=query,
             plan_length=len(current_plan)
@@ -391,7 +424,7 @@ class DS_STAR_Agent:
         
         result = self.controller.execute_step(
             "coder",
-            step_func=lambda prompt=prompt, **kwargs: self._call_gemini("CODER", prompt),  # FIXED
+            step_func=lambda prompt=prompt, **kwargs: self._call_model("CODER", prompt),  # FIXED
             prompt=prompt,
             plan_length=len(plan),
             has_base_code=base_code is not None
@@ -407,7 +440,7 @@ class DS_STAR_Agent:
         
         return self.controller.execute_step(
             "verifier",
-            step_func=lambda prompt=prompt, **kwargs: self._call_gemini("VERIFIER", prompt),  # FIXED
+            step_func=lambda prompt=prompt, **kwargs: self._call_model("VERIFIER", prompt),  # FIXED
             prompt=prompt,
             plan_length=len(plan)
         ).strip()
@@ -421,7 +454,7 @@ class DS_STAR_Agent:
         
         return self.controller.execute_step(
             "router",
-            step_func=lambda prompt=prompt, **kwargs: self._call_gemini("ROUTER", prompt),  # FIXED
+            step_func=lambda prompt=prompt, **kwargs: self._call_model("ROUTER", prompt),  # FIXED
             prompt=prompt,
             plan_length=len(plan)
         ).strip()
@@ -434,7 +467,7 @@ class DS_STAR_Agent:
         
         result = self.controller.execute_step(
             "debugger",
-            step_func=lambda prompt=prompt, **kwargs: self._call_gemini("DEBUGGER", prompt),  # FIXED
+            step_func=lambda prompt=prompt, **kwargs: self._call_model("DEBUGGER", prompt),  # FIXED
             prompt=prompt,
             error_type=error.split(":")[0]
         )
@@ -450,7 +483,7 @@ class DS_STAR_Agent:
         
         result = self.controller.execute_step(
             "finalyzer",
-            step_func=lambda prompt=prompt, **kwargs: self._call_gemini("FINALYZER", prompt),  # FIXED
+            step_func=lambda prompt=prompt, **kwargs: self._call_model("FINALYZER", prompt),  # FIXED
             prompt=prompt
         )
         
