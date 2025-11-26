@@ -10,7 +10,7 @@ import atexit
 import yaml
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
-from provider import ModelProvider, GeminiProvider, OpenAIProvider
+from provider import ModelProvider, GeminiProvider, OpenAIProvider, VertexAIProvider
 
 # =============================================================================
 # CONFIGURATION & PROMPT TEMPLATES
@@ -34,6 +34,10 @@ class DSConfig:
     data_dir: str = "data"
     code_library_dir: str = "code_library"
     agent_models: Dict[str, str] = field(default_factory=dict)
+    # Vertex AI configuration
+    use_vertex_ai: bool = False
+    vertex_ai_project: Optional[str] = None
+    vertex_ai_location: str = "us-central1"
     
     def __post_init__(self):
         if self.run_id is None:
@@ -42,6 +46,9 @@ class DSConfig:
             self.api_key = os.environ.get("GEMINI_API_KEY")
         if self.agent_models is None:
             self.agent_models = {}
+        # Set Vertex AI project from env if not set
+        if self.use_vertex_ai and not self.vertex_ai_project:
+            self.vertex_ai_project = os.environ.get("GOOGLE_CLOUD_PROJECT")
 
 
 
@@ -246,41 +253,43 @@ class DS_STAR_Agent:
         
         def get_provider_for_model(model_name: str, config: DSConfig) -> ModelProvider:
             if model_name.startswith("gpt") or model_name.startswith("o1"):
+                # OpenAI model - use API key
                 provider_cls = OpenAIProvider
+                api_key = config.api_key or os.environ.get("OPENAI_API_KEY")
+                if not api_key:
+                    raise ValueError("OPENAI_API_KEY must be set for OpenAI models")
+                return provider_cls(api_key, model_name)
             else:
-                provider_cls = GeminiProvider
-            
-            # Get API key
-            # We check config first, then env var defined by the provider
-            # Note: We instantiate a dummy to get the env var name, or make it static.
-            # Since it's a property on instance in our design, we might need to change design or instantiate dummy.
-            # For now, let's just check the env var directly based on class.
-            
-            # Better approach: Pass the key if available in config, else let provider handle it or check env here.
-            # But config.api_key is currently a single field.
-            # If we have multiple providers, we might need multiple keys.
-            # For backward compatibility, config.api_key is likely the Gemini key or the "primary" key.
-            
-            # Let's assume config.api_key is for the default provider if it matches, otherwise check env.
-            
-            dummy = provider_cls(api_key="dummy", model_name="dummy")
-            env_var = dummy.env_var_name
-            
-            api_key = os.environ.get(env_var)
-            if config.api_key and provider_cls == GeminiProvider: # Assume config.api_key is for Gemini if not specified otherwise
-                 api_key = config.api_key
-            
-            # If we still don't have a key, and it's OpenAI, maybe config.api_key was meant for it?
-            # This is ambiguous. Let's rely on Env Vars for non-default providers if config.api_key is taken.
-            
-            if not api_key:
-                 # Fallback: if config.api_key is set, try using it (user might have set it for OpenAI)
-                 if config.api_key:
-                     api_key = config.api_key
-                 else:
-                     raise ValueError(f"{env_var} must be set for model {model_name}")
-            
-            return provider_cls(api_key, model_name)
+                # Gemini model - check if using Vertex AI or API key
+                if config.use_vertex_ai:
+                    # Use Vertex AI with Application Default Credentials
+                    project_id = config.vertex_ai_project
+                    if not project_id:
+                        raise ValueError(
+                            "vertex_ai_project must be set in config.yaml or GOOGLE_CLOUD_PROJECT "
+                            "environment variable must be set when using Vertex AI"
+                        )
+                    # Log the configuration being used
+                    import logging
+                    logging.getLogger(__name__).info(
+                        f"Initializing Vertex AI with project_id='{project_id}', "
+                        f"location='{config.vertex_ai_location}', model_name='{model_name}'"
+                    )
+                    return VertexAIProvider(
+                        project_id=project_id,
+                        location=config.vertex_ai_location,
+                        model_name=model_name
+                    )
+                else:
+                    # Use API key method (existing behavior)
+                    provider_cls = GeminiProvider
+                    api_key = config.api_key or os.environ.get("GEMINI_API_KEY")
+                    if not api_key:
+                        raise ValueError(
+                            "GEMINI_API_KEY must be set in config.yaml or environment variable "
+                            "when not using Vertex AI"
+                        )
+                    return provider_cls(api_key, model_name)
 
         for agent in agents:
             model_name = config.agent_models.get(agent, default_model)
@@ -328,20 +337,28 @@ class DS_STAR_Agent:
                 # Fallback to default if agent name not found
                 default_model = self.config.model_name
                 # Re-use the logic to get provider
-                # For simplicity, just assume Gemini fallback for now or duplicate logic?
-                # Let's duplicate for safety but ideally refactor.
                 if default_model.startswith("gpt") or default_model.startswith("o1"):
-                    provider_cls = OpenAIProvider
+                    # OpenAI fallback
+                    api_key = self.config.api_key or os.environ.get("OPENAI_API_KEY")
+                    if not api_key:
+                        raise ValueError("API Key not found for fallback OpenAI provider.")
+                    provider = OpenAIProvider(api_key, default_model)
+                elif self.config.use_vertex_ai:
+                    # Vertex AI fallback
+                    project_id = self.config.vertex_ai_project or os.environ.get("GOOGLE_CLOUD_PROJECT")
+                    if not project_id:
+                        raise ValueError("vertex_ai_project not found for fallback Vertex AI provider.")
+                    provider = VertexAIProvider(
+                        project_id=project_id,
+                        location=self.config.vertex_ai_location,
+                        model_name=default_model
+                    )
                 else:
-                    provider_cls = GeminiProvider
-                
-                dummy = provider_cls(api_key="dummy", model_name="dummy")
-                env_var = dummy.env_var_name
-                api_key = self.config.api_key or os.environ.get(env_var)
-                
-                if not api_key:
-                     raise ValueError(f"API Key not found for fallback provider ({env_var}).")
-                provider = provider_cls(api_key, default_model)
+                    # Gemini API key fallback
+                    api_key = self.config.api_key or os.environ.get("GEMINI_API_KEY")
+                    if not api_key:
+                        raise ValueError("API Key not found for fallback Gemini provider.")
+                    provider = GeminiProvider(api_key, default_model)
                 
             response_text = provider.generate_content(prompt)
             self.controller.logger.info(f"[{agent_name}] Response received ({len(response_text)} chars)")
@@ -417,8 +434,8 @@ class DS_STAR_Agent:
         
         if error:
             self.controller.logger.warning(f"Analysis failed: {error}")
-            self._create_fallback_file(filename)
-            exec_result = f"Created fallback for {filename}"
+            # Provide a simple fallback description
+            exec_result = f"File: {filename}\nAnalysis failed with error: {error}\nAssuming CSV file with standard structure."
         
         return {"code": code, "result": exec_result, "filename": filename}
 
@@ -613,8 +630,9 @@ class DS_STAR_Agent:
             else:
                 self.controller.logger.warning("Max refinement rounds reached")
         
-        # Load code and exec_result from previous run if not defined (resuming case)
-        if code is None or exec_result is None:
+        # Load code and exec_result from previous run if not defined (only when resuming)
+        if (code is None or exec_result is None) and state["completed_steps"]:
+            # We're resuming and need to load from previous steps
             steps = self.storage.list_steps()
             
             # Find the last step with code
@@ -631,6 +649,12 @@ class DS_STAR_Agent:
                 raise ValueError("Could not load code from previous steps. Please ensure the pipeline has been run before.")
             if exec_result is None:
                 exec_result = ""  # Default to empty string if not found
+        elif code is None or exec_result is None:
+            # This is a new run but Phase 2 didn't execute - this shouldn't happen
+            raise ValueError(
+                "Pipeline execution error: Phase 2 did not complete. "
+                "This may indicate an error during code generation or execution."
+            )
         
         # PHASE 3: Finalization
         self.controller.logger.info("=== PHASE 3: FINALIZING ===")
@@ -685,11 +709,23 @@ def main():
         'interactive': args.interactive or config_defaults.get('interactive', False),
         'max_refinement_rounds': args.max_rounds or config_defaults.get('max_refinement_rounds', 5),
         'model_name': config_defaults.get('model_name', 'gemini-1.5-flash'),
-        'preserve_artifacts': config_defaults.get('preserve_artifacts', True)
+        'preserve_artifacts': config_defaults.get('preserve_artifacts', True),
+        'use_vertex_ai': config_defaults.get('use_vertex_ai', False),
+        'vertex_ai_project': config_defaults.get('vertex_ai_project'),
+        'vertex_ai_location': config_defaults.get('vertex_ai_location', 'us-central1'),
+        'api_key': config_defaults.get('api_key')
     }
     
     # Filter out None values so dataclass defaults are used
     config_params = {k: v for k, v in config_params.items() if v is not None}
+    
+    # Debug: Log config values being used
+    import logging
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
+    logger = logging.getLogger(__name__)
+    if config_params.get('use_vertex_ai'):
+        logger.info(f"Vertex AI config - project: {config_params.get('vertex_ai_project')}, "
+                   f"location: {config_params.get('vertex_ai_location')}")
     
     config = DSConfig(**config_params)
     

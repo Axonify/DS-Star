@@ -53,6 +53,9 @@ coder_init: |
   {summaries}
   # Plan
   {plan}
+  # Available libraries
+  You have access to: pandas, numpy, matplotlib, seaborn, openpyxl, textblob, vadersentiment, scikit-learn, nltk
+
   #Your task
   Implement the plan with the given data.
   Your response should be a single markdown Python code (wrapped in).
@@ -70,6 +73,9 @@ coder_next: |
   {plan}
   # Current plan to implement
   {current_plan}
+  # Available libraries
+  You have access to: pandas, numpy, matplotlib, seaborn, openpyxl, textblob, vadersentiment, scikit-learn, nltk
+  
   #Your task
   Implement the current plan with the given data.
   The implementation should be done based on the base code.

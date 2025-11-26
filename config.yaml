@@ -1,6 +1,10 @@
-# config.yaml
-run_id: "experiment_name"
+
 model_name: "gemini-2.5-flash"
 interactive: false
 max_refinement_rounds: 3
 preserve_artifacts: true
+
+# Use Vertex AI with gcloud authentication (recommended for organizations)
+use_vertex_ai: true
+vertex_ai_project: "dev-test-251019"  # Or set GOOGLE_CLOUD_PROJECT env var
+vertex_ai_location: "us-central1"  # Your preferred GCP region
