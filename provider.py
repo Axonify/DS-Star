@@ -28,9 +28,11 @@ class ModelProvider(ABC):
 class GeminiProvider(ModelProvider):
     """Provider for Google's Gemini models."""
     
-    def __init__(self, api_key: str, model_name: str):
+    def __init__(self, api_key: str, model_name: str, temperature: float = 1.0, seed: int = None):
         self.api_key = api_key
         self.model_name = model_name
+        self.temperature = temperature
+        self.seed = seed
         genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel(self.model_name)
         
@@ -39,13 +41,20 @@ class GeminiProvider(ModelProvider):
         return "GEMINI_API_KEY"
         
     def generate_content(self, prompt: str) -> str:
-        response = self.model.generate_content(prompt)
+        # Build generation config
+        generation_config = {
+            "temperature": self.temperature,
+        }
+        if self.seed is not None:
+            generation_config["seed"] = self.seed
+            
+        response = self.model.generate_content(prompt, generation_config=generation_config)
         return response.text
 
 class VertexAIProvider(ModelProvider):
     """Provider for Google's Vertex AI Gemini models using Application Default Credentials."""
     
-    def __init__(self, project_id: str, location: str, model_name: str):
+    def __init__(self, project_id: str, location: str, model_name: str, temperature: float = 1.0, seed: int = None):
         if not VERTEX_AI_AVAILABLE:
             raise ImportError(
                 "google-cloud-aiplatform is not installed. "
@@ -54,6 +63,8 @@ class VertexAIProvider(ModelProvider):
         self.project_id = project_id
         self.location = location
         self.model_name = model_name
+        self.temperature = temperature
+        self.seed = seed
         
         # Validate project_id is not a placeholder
         if not project_id or project_id == "your-gcp-project-id":
@@ -88,7 +99,14 @@ class VertexAIProvider(ModelProvider):
         return "GOOGLE_CLOUD_PROJECT"  # Not strictly required, but useful for project detection
         
     def generate_content(self, prompt: str) -> str:
-        response = self.model.generate_content(prompt)
+        # Build generation config
+        generation_config = {
+            "temperature": self.temperature,
+        }
+        if self.seed is not None:
+            generation_config["seed"] = self.seed
+            
+        response = self.model.generate_content(prompt, generation_config=generation_config)
         return response.text
 
 class OpenAIProvider(ModelProvider):

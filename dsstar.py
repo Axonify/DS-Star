@@ -38,6 +38,9 @@ class DSConfig:
     use_vertex_ai: bool = False
     vertex_ai_project: Optional[str] = None
     vertex_ai_location: str = "us-central1"
+    # Generation parameters
+    temperature: float = 1.0
+    seed: Optional[int] = None
     
     def __post_init__(self):
         if self.run_id is None:
@@ -273,12 +276,15 @@ class DS_STAR_Agent:
                     import logging
                     logging.getLogger(__name__).info(
                         f"Initializing Vertex AI with project_id='{project_id}', "
-                        f"location='{config.vertex_ai_location}', model_name='{model_name}'"
+                        f"location='{config.vertex_ai_location}', model_name='{model_name}', "
+                        f"temperature={config.temperature}, seed={config.seed}"
                     )
                     return VertexAIProvider(
                         project_id=project_id,
                         location=config.vertex_ai_location,
-                        model_name=model_name
+                        model_name=model_name,
+                        temperature=config.temperature,
+                        seed=config.seed
                     )
                 else:
                     # Use API key method (existing behavior)
@@ -289,7 +295,7 @@ class DS_STAR_Agent:
                             "GEMINI_API_KEY must be set in config.yaml or environment variable "
                             "when not using Vertex AI"
                         )
-                    return provider_cls(api_key, model_name)
+                    return provider_cls(api_key, model_name, temperature=config.temperature, seed=config.seed)
 
         for agent in agents:
             model_name = config.agent_models.get(agent, default_model)
@@ -351,14 +357,16 @@ class DS_STAR_Agent:
                     provider = VertexAIProvider(
                         project_id=project_id,
                         location=self.config.vertex_ai_location,
-                        model_name=default_model
+                        model_name=default_model,
+                        temperature=self.config.temperature,
+                        seed=self.config.seed
                     )
                 else:
                     # Gemini API key fallback
                     api_key = self.config.api_key or os.environ.get("GEMINI_API_KEY")
                     if not api_key:
                         raise ValueError("API Key not found for fallback Gemini provider.")
-                    provider = GeminiProvider(api_key, default_model)
+                    provider = GeminiProvider(api_key, default_model, temperature=self.config.temperature, seed=self.config.seed)
                 
             response_text = provider.generate_content(prompt)
             self.controller.logger.info(f"[{agent_name}] Response received ({len(response_text)} chars)")
@@ -713,7 +721,9 @@ def main():
         'use_vertex_ai': config_defaults.get('use_vertex_ai', False),
         'vertex_ai_project': config_defaults.get('vertex_ai_project'),
         'vertex_ai_location': config_defaults.get('vertex_ai_location', 'us-central1'),
-        'api_key': config_defaults.get('api_key')
+        'api_key': config_defaults.get('api_key'),
+        'temperature': config_defaults.get('temperature', 1.0),
+        'seed': config_defaults.get('seed')
     }
     
     # Filter out None values so dataclass defaults are used

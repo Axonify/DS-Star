@@ -8,3 +8,7 @@ preserve_artifacts: true
 use_vertex_ai: true
 vertex_ai_project: "dev-test-251019"  # Or set GOOGLE_CLOUD_PROJECT env var
 vertex_ai_location: "us-central1"  # Your preferred GCP region
+
+# Gemini generation parameters
+temperature: 1.0  # Range: 0.0-2.0, controls randomness (lower = more deterministic)
+seed: null  # Optional integer for deterministic outputs (null = random)
